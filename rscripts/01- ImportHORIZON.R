@@ -1,79 +1,101 @@
 #' ####################################################
-#'   
-#'   2stgTGIOS
+#'
 #'   Data preparation
-#'   
-#'   Q1-2022
-#'   Francois Mercier 
-#'   
+#'   HORIZONIII study (from PDS)
+#'
+#'   Q3-2024
+#'   Francois Mercier
+#'
 #' ####################################################
 
 
 #' sessionInfo()
 
+#' ----------------------------------
+#' Structure analysis data set:
+#' ----------------------------------
+#' For time to event sub-model (event.df):
+#' ***************************
+#' SUBJID (chr)
+#' STUDY (chr)
+#' ATRT (chr)
+#'
+#' EVENTYR (num) - Time to event (in years)
+#' EVENTFL (0/1) - Flag =1 if the ind died, 0 if censored
+#'
+#' For longi (TGI) sub-model (biom.df):
+#' ***************************
+#' SUBJID (chr)
+#' STUDY (chr)
+#' ATRT (chr)
+#'
+#' BIOMVAL (num) - Biomarker (here, SLD in mm) value
+#' BIOMYR (num) - Biomarker measurement time (in years)
+#' ----------------------------------
+
+
 #' ===============================================
 #' Import and Select
 #' ===============================================================
 
-#' UID values
-#' ---------------------------------
-subj<-haven::read_sas("../HORIZONIII/data/rdpsubj.sas7bdat")
-rcist<-haven::read_sas("../HORIZONIII/data/rdprcist.sas7bdat") 
+#' Event data frame
+#' -----------------
+subj<-haven::read_sas("./data/HORIZONIII/rdpsubj.sas7bdat")
+rcist<-haven::read_sas("./data/HORIZONIII/rdprcist.sas7bdat")
 
-keepin0<-c("UID", "LSVISDY", "SEX", "BEV_SDY", "BEV_EDY", "DEATDI", 
-           "LDH1_5", "BL_VEGFN", "VEGF_STR")
-
-#' - keep patients in PerProtocol set (PP_SET==1)
-#' - keep rows from patients exposed to BEV for at least 3 weeks (i.e. at least 1st TA visit)
-subj0<-subj %>% 
-  filter(PP_SET==1, !is.na(BEV_SDY), !is.na(BEV_EDY), BEV_EDY>3*7) %>%
-  mutate(UID=RANDCODE) %>%
-  select(one_of(keepin0))
-#' dim(subj0)
-#' [1] 645  13
-
-#' OS values
-#' ---------------------------------
-os0<-rcist %>% 
-  mutate(UID=RANDCODE) %>%
-  filter(UID %in% subj0$UID) %>%
-  group_by(UID) %>%
-    slice(1) %>%
-  ungroup() %>%
-  mutate(OSYEAR=OSTIM/365.25) %>%
-  select(UID, DEATFLAG, OSTIM, OSCEN, OSYEAR)
-#' length(os0$UID)
+#' Only keep patients in PerProtocol set (PP_SET==1)
+#' and exposed to BEV for at least 3 weeks (i.e. at least 1st TA visit)
+subj0<-subj |>
+  filter(PP_SET==1, !is.na(BEV_SDY), !is.na(BEV_EDY), BEV_EDY>3*7) |>
+  mutate(SUBJID=as.character(RANDCODE)) |>
+  select(SUBJID, LDH1_5)
+#' length(unique(subj0$SUBJID))
 #' 645
 
-#' SLD values
-#' ---------------------------------
+event.df0<-rcist |>
+  mutate(SUBJID=as.character(RANDCODE)) |>
+  filter(SUBJID %in% subj0$SUBJID) |>
+  group_by(SUBJID) %>% slice(1) %>% ungroup() |>
+  mutate(EVENTYR=OSTIM/365.25, EVENTFL=ifelse(DEATFLAG==1, 0, 1),
+         ATRT="FOLFOX alone", STUDY="2") |>
+  select(SUBJID, STUDY, ATRT, EVENTYR, EVENTFL)
+
+UID.event0<-unique(event.df0$SUBJID)
+#' length(UID.event0)
+#' 645
+
+#' Biomarker (SLD) data frame
+#' -----------------
 #' - remove rows where SLD is NA
 #' - remove rows where patients have PBLCNT=NA i.e. remove patient with at least one post-baseline TA
-tk0<-rcist %>% 
-  mutate(UID=RANDCODE) %>%
-  filter(UID %in% subj0$UID) %>%
-  drop_na(STLDI) %>%
-  filter(!is.na(PBLCNT)) %>%
-  mutate(SLD=ifelse(STLDI==0, 2.5, STLDI*10), 
-         BSLD=BL_STLDI*10,
-         TKYEAR=ORDYTRT/365.25) 
-#' length(unique(tk0$UID))
+biom.df0<-rcist |>
+  filter(!is.na(PBLCNT), !is.na(STLDI)) |>
+  mutate(SUBJID=as.character(RANDCODE), STUDY="2", ATRT="FOLFOX alone",
+         BIOMVAL=ifelse(STLDI==0, 2.5, STLDI*10),
+         BIOMYR=ORDYTRT/365.25) |>
+  select(SUBJID, STUDY, ATRT, BIOMVAL, BIOMYR)
+
+UID.biom0<-unique(biom.df0$SUBJID)
+#' length(UID.biom0)
+#' 660
+
+#' Retain matching patients
+#' -----------------
+
+retainID<-intersect(UID.event0, UID.biom0)
 #' 640
 
-#' ===============================================
-#' Build analysis dataset
-#' ===============================================================
+event.df<-event.df0 |> filter(SUBJID %in% retainID)
+#' length(unique(event.df$SUBJID))
+#' 640
+#' saveRDS(event.df, file="./data/HORIZONIII/HorizOSads.rds")
 
-os1<-left_join(subj0, os0, by="UID") %>%
-  select(UID, SEX, OSTIM, OSCEN, OSYEAR, LDH1_5, BL_VEGFN, VEGF_STR)
-#' length(unique(os1$UID))
 
-tk1<-left_join(tk0, subj0, by="UID") %>%
-  select(UID, ORDYTRT, TKYEAR, BL_VIS, BSLD, SLD, PBLCNT)
-#' length(unique(tk1$UID))
+biom.df<-biom.df0 |> filter(SUBJID %in% retainID)
+#' length(unique(biom.df$SUBJID))
+#' 640
+#' saveRDS(biom.df, file="./data/HORIZONIII/HorizTGIads.rds")
 
-#' saveRDS(os1, file="../HORIZONIII/data/HorizOSads.rds")
-#' saveRDS(tk1, file="../HORIZONIII/data/HorizTGIads.rds")
 
 
 
